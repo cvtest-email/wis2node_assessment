@@ -10,7 +10,7 @@ cache/a/wis2/<centre-id>/#
 monitor/a/wis2/<centre-id>
 ```
 
-These match the usual `mosquitto_sub` commands used on Rocky Linux and other systems that do not have MQTT Explorer.
+These match the usual `mosquitto_sub` commands used on systems that do not have MQTT Explorer.
 
 ## Requirements
 
