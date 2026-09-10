@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+wis2_assessment_output/
+.pytest_cache/
+samples/
+
