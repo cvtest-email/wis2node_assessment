@@ -50,6 +50,9 @@ class SessionConfig:
     gisc: str = DEFAULT_GISC
     gdc_url: str = DEFAULT_GDC_URL
     skip_gdc: bool = False
+    skip_http: bool = False
+    http_max_urls: int = 8
+    http_timeout: int = 15
     output_dir: str = ""
     client_id: str = ""
 

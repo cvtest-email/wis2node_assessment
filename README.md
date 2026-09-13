@@ -1,6 +1,6 @@
 # WIS2 Node Assessment console
 
-Terminal tool for **GISC approval** of any WIS2 Node / wis2box. It subscribes to the WIS2Dev Global Broker, checks WCMP2 in the Global Discovery Catalogue, and writes the official assessment report.
+Terminal tool for **GISC approval** of any WIS2 Node / wis2box. It observes the WIS2Dev Global Broker and GDC, runs WTH / WNM / MQTT / HTTP tests on what a GISC can see, and writes an assessment report with a pass/fail matrix and evidence.
 
 The only node-specific value you enter is the WIS2 **centre-id**. Topics are built automatically:
 
@@ -52,18 +52,21 @@ python3 wis2_assess.py --centre au-bom --gisc "GISC Melbourne"
 
 ## Live console
 
-Three panes show origin, cache and monitor together. The assessment checklist includes:
+Three panes show origin, cache and monitor together. The assessment engine scores named tests:
 
-- WCMP2 in GDC: `https://gdc.wis2dev.io/collections/wis2-discovery-metadata/items?q="<centre-id>"`
-- `origin/a/wis2/<centre-id>/metadata`
-- `origin/a/wis2/<centre-id>/data/#`
-- `cache/a/wis2/<centre-id>/metadata`
-- `cache/a/wis2/<centre-id>/data/core/#`
-- monitor ETS reports and errors
+- **WTH** — topic structure, metadata/data/cache/monitor topics, centre-id consistency
+- **WNM** — JSON, required fields, UUID, pubtime, geometry, links, content, integrity, cache flag, topic/message relationship
+- **MQTT** — broker reachability, TLS, authentication, subscriptions (the broker this session connected to)
+- **GDC** — WCMP2 records present; GDC ETS on monitor (this tool does not replace wis2-gdc)
+- **HTTP** — DNS, TLS, status, headers, download, redirects, canonical URL, hash, latency on sampled origin canonical links (when a report is written)
+
+Overall verdict: `PASS`, `PASS WITH WARNINGS`, `FAIL`, or `INCOMPLETE`.
 
 Keys: `1` `2` `3` focus panes, `g` refresh GDC, `r` write report, `s` save evidence, `q` quit.
 
-Reports are written to `wis2_assessment_output/<centre-id>_<timestamp>/REPORT.txt`.
+Reports are written to `wis2_assessment_output/<centre-id>_<timestamp>/`. That directory includes `REPORT.txt`, `tests.json`, and captured MQTT/GDC evidence.
+
+Use `--skip-http` to write a report without probing data-server URLs.
 
 ## Headless collection
 

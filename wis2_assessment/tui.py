@@ -11,6 +11,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, ListItem, ListView, Static
 
 from .config import SessionConfig
+from .engine import run_engine
 from .formatters import (
     format_checklist,
     format_connection_banner,
@@ -155,7 +156,7 @@ class WIS2AssessmentApp(App):
                 detail_pane.border_title = "MESSAGE DETAIL"
                 yield Static(id="detail")
             with VerticalScroll(id="checklist-pane") as checklist_pane:
-                checklist_pane.border_title = "ASSESSMENT"
+                checklist_pane.border_title = "ASSESSMENT ENGINE"
                 yield Static(id="checklist")
         yield Footer()
 
@@ -163,7 +164,7 @@ class WIS2AssessmentApp(App):
         self.query_one("#status-bar", Static).update(
             format_connection_banner(self.config.broker_url(), "connecting")
         )
-        self.query_one("#checklist", Static).update(format_checklist(self.store.evaluate(self.config.centre_id)))
+        self._refresh_checklist()
         if not self.auto_connect:
             return
         if not self.config.skip_gdc:
@@ -215,21 +216,32 @@ class WIS2AssessmentApp(App):
     def _on_mqtt_status(self, kind: str, text: str) -> None:
         self._call_ui(self.handle_status, kind, text)
 
+    def _refresh_checklist(self) -> None:
+        try:
+            engine = run_engine(self.store, self.config, probe_http=False, live_session=True)
+            self.query_one("#checklist", Static).update(
+                format_checklist(self.store.evaluate(self.config.centre_id), engine)
+            )
+        except Exception:
+            return
+
     def handle_status(self, kind: str, text: str) -> None:
         if self._closing:
             return
         if kind == "connection":
             self._conn_status = text
+            self.store.set_connection(text)
         elif kind == "subscription":
             lowered = text.lower()
             for channel in ("origin", "cache", "monitor"):
                 if text.startswith(channel) or f"{channel}:" in lowered:
                     self._sub_status[channel] = text
+                    self.store.set_subscription(channel, text)
                     try:
                         pane = self.query_one(f"#{channel}-pane", ChannelPane)
+                        pane.update_title(self._counts[channel], text)
                     except Exception:
-                        return
-                    pane.update_title(self._counts[channel], text)
+                        pass
                     break
         try:
             self.query_one("#status-bar", Static).update(
@@ -237,6 +249,7 @@ class WIS2AssessmentApp(App):
             )
         except Exception:
             return
+        self._refresh_checklist()
         if "denied" in text.lower() or "fail" in text.lower():
             self.notify(text, severity="error")
 
@@ -260,9 +273,7 @@ class WIS2AssessmentApp(App):
             list_view.index = 0
         pane = self.query_one(f"#{channel}-pane", ChannelPane)
         pane.update_title(self._counts[channel], self._sub_status.get(channel, ""))
-        self.query_one("#checklist", Static).update(
-            format_checklist(self.store.evaluate(self.config.centre_id))
-        )
+        self._refresh_checklist()
         if message.channel == "monitor" and message.is_monitor_error():
             self.notify(message.monitor_title() or "Monitor error", severity="error")
         if self._selected is None:
@@ -292,9 +303,7 @@ class WIS2AssessmentApp(App):
             return
         self.store.set_gdc(snapshot)
         try:
-            self.query_one("#checklist", Static).update(
-                format_checklist(self.store.evaluate(self.config.centre_id))
-            )
+            self._refresh_checklist()
         except Exception:
             return
         if snapshot.ok:

@@ -73,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gisc", default=None, help="GISC name used in the generated report")
     parser.add_argument("--gdc-url", default=None, help="GDC items URL")
     parser.add_argument("--skip-gdc", action="store_true", help="Do not query the Global Discovery Catalogue")
+    parser.add_argument(
+        "--skip-http",
+        action="store_true",
+        help="Do not probe canonical data-server URLs when writing the report",
+    )
     parser.add_argument("-o", "--output-dir", default=None, help="Directory for reports and evidence")
     parser.add_argument("--headless", action="store_true", help="Collect without the interactive TUI")
     parser.add_argument("--duration", type=int, default=0, help="Headless collection time in seconds (0 = until Ctrl+C)")
@@ -156,6 +161,8 @@ def _apply_cli(config: SessionConfig, args: argparse.Namespace) -> None:
         config.gdc_url = args.gdc_url
     if args.skip_gdc:
         config.skip_gdc = True
+    if args.skip_http:
+        config.skip_http = True
     if args.output_dir:
         config.output_dir = args.output_dir
     config.apply_centre_defaults()
@@ -311,6 +318,14 @@ def run_headless(config: SessionConfig, duration: int, console: Console) -> int:
         console.print(format_list_item(message, verbose=config.verbose))
 
     def on_status(kind: str, text: str) -> None:
+        if kind == "connection":
+            store.set_connection(text)
+        elif kind == "subscription":
+            lowered = text.lower()
+            for channel in ("origin", "cache", "monitor"):
+                if text.startswith(channel) or f"{channel}:" in lowered:
+                    store.set_subscription(channel, text)
+                    break
         style = "red" if "fail" in text.lower() or "denied" in text.lower() else "dim"
         console.print(f"{kind}: {text}", style=style)
 

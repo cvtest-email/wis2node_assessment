@@ -10,6 +10,7 @@ from rich.json import JSON
 from rich.table import Table
 from rich.text import Text
 
+from .engine.results import EngineReport
 from .messages import ParsedMessage, format_geometry, local_timestamp
 
 
@@ -246,12 +247,29 @@ def checklist_rows(assessment) -> list[tuple[str, bool, str]]:
     ]
 
 
-def format_checklist(assessment) -> Text:
+def format_checklist(assessment, engine: EngineReport | None = None) -> Text:
     text = Text()
     text.append("WIS2 Node Assessment", style="bold")
     if assessment.centre_id:
         text.append(f"  {assessment.centre_id}", style="cyan")
     text.append("\n")
+    if engine is not None:
+        overall = engine.overall()
+        style = "bold green" if overall == "PASS" else "bold yellow"
+        if overall == "FAIL":
+            style = "bold red"
+        text.append("  overall: ", style="dim")
+        text.append(overall, style=style)
+        text.append("\n")
+        for row in engine.matrix_rows():
+            if row[4] == "SKIP":
+                continue
+            group_style = "green" if row[4] == "PASS" else "yellow"
+            if row[4] == "FAIL":
+                group_style = "red"
+            text.append(f"  {row[0]:<6}", style="dim")
+            text.append(f"{row[2]}/{row[1]}  {row[4]}\n", style=group_style)
+        text.append("\n")
     for topic, ok, detail in checklist_rows(assessment):
         text.append("  ")
         if topic == "monitor errors" and assessment.monitor_errors:

@@ -137,7 +137,7 @@ def query_gdc(centre_id: str, base_url: str = DEFAULT_GDC_URL, timeout: int = 20
                 url,
                 headers={
                     "Accept": "application/geo+json, application/json",
-                    "User-Agent": "wis2-node-assessment/1.1",
+                    "User-Agent": "wis2-node-assessment/1.2",
                 },
             )
             with urlopen(request, timeout=timeout) as response:

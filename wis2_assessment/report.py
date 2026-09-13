@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import SessionConfig
+from .engine import EngineReport, run_engine
 from .store import Assessment, MessageStore
 
 
@@ -35,10 +36,99 @@ def _mark(ok: bool) -> str:
     return "observed" if ok else "not yet observed"
 
 
+def _verdict_mark(status: str) -> str:
+    if status == "PASS":
+        return "✓"
+    if status in {"FAIL", "NOT_OBSERVED"}:
+        return "✗" if status == "FAIL" else "·"
+    if status in {"WARNING", "PASS WITH WARNINGS", "INCOMPLETE"}:
+        return "⚠"
+    return "·"
+
+
+def format_verdict_block(
+    engine: EngineReport,
+    assessment: Assessment,
+    config: SessionConfig,
+    generated_at: datetime,
+) -> str:
+    centre = assessment.centre_id or config.centre_id or "<centre-id>"
+    gisc = config.gisc or "the responsible GISC"
+    counts = engine.counts()
+    overall = engine.overall()
+    lines = [
+        "====================================================",
+        "             WIS2 NODE ASSESSMENT",
+        "====================================================",
+        f"Centre ID:    {centre}",
+        f"Assessment:   {generated_at.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"GISC:         {gisc}",
+        "Version:      1.2.0 (Phase 1 conformance engine)",
+        "",
+        "Overall Result",
+        "----------------------------------------------------",
+    ]
+    for row in engine.matrix_rows():
+        lines.append(f"{_verdict_mark(row[4])} {row[0]:<12} {row[4]}")
+    lines.append("")
+    lines.append(f"OVERALL: {overall}")
+    lines.append("")
+    lines.append(f"Tests: {counts.get('total', 0)}")
+    lines.append(f"Passed: {counts.get('PASS', 0)}")
+    lines.append(f"Failed: {counts.get('FAIL', 0)}")
+    lines.append(f"Warnings: {counts.get('WARNING', 0)}")
+    lines.append(f"Not observed: {counts.get('NOT_OBSERVED', 0)}")
+    lines.append(f"Skipped: {counts.get('SKIP', 0)}")
+    lines.append("====================================================")
+    lines.append("")
+    lines.append("Test group                          Tests  Passed  Failed  Status")
+    lines.append("----------------------------------  -----  ------  ------  ------")
+    for row in engine.matrix_rows():
+        lines.append(
+            f"{row[0]:<34}  {row[1]:>5}  {row[2]:>6}  {row[3]:>6}  {row[4]}"
+        )
+    lines.append("")
+    interesting = [
+        item
+        for item in engine.results
+        if item.result in {"FAIL", "WARNING"}
+    ]
+    if interesting:
+        lines.append("Findings")
+        lines.append("--------")
+        for item in interesting:
+            lines.append("")
+            lines.append(f"Test ID:       {item.test_id}")
+            lines.append(f"Requirement:   {item.requirement}")
+            lines.append(f"Test:          {item.title}")
+            lines.append(f"Class:         {item.classification}")
+            lines.append(f"Result:        {item.result}")
+            lines.append(f"Timestamp:     {item.timestamp}")
+            if item.expected:
+                lines.append(f"Expected:      {item.expected}")
+            if item.received:
+                lines.append(f"Received:      {item.received}")
+            if item.evidence:
+                topic = ""
+                failures = item.evidence.get("failures") or item.evidence.get("urls") or []
+                if failures and isinstance(failures, list) and isinstance(failures[0], dict):
+                    topic = failures[0].get("topic") or failures[0].get("url") or ""
+                    payload = failures[0].get("payload_sha256") or ""
+                    if topic:
+                        lines.append(f"Evidence:      {topic}")
+                    if payload:
+                        lines.append(f"Payload:       SHA256({payload})")
+            if item.recommendation:
+                lines.append(f"Recommendation: {item.recommendation}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def generate_report_text(
     assessment: Assessment,
     config: SessionConfig,
     generated_at: datetime | None = None,
+    engine: EngineReport | None = None,
 ) -> str:
     centre = assessment.centre_id or config.centre_id or "<centre-id>"
     gisc = config.gisc or "the responsible GISC"
@@ -61,6 +151,9 @@ def generate_report_text(
         ets_ids = assessment.unique_metadata_ids(assessment.origin_metadata)
 
     lines: list[str] = []
+    if engine is not None:
+        lines.append(format_verdict_block(engine, assessment, config, now).rstrip())
+        lines.append("")
     lines.append(f"WIS2 Node Assessment report for {centre}")
     lines.append(f"Generated: {now.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}")
     lines.append(f"GISC: {gisc}")
@@ -292,13 +385,14 @@ def generate_report_markdown(
     assessment: Assessment,
     config: SessionConfig,
     generated_at: datetime | None = None,
+    engine: EngineReport | None = None,
 ) -> str:
     centre = assessment.centre_id or config.centre_id or "<centre-id>"
     lines = [
         f"# WIS2 Node Assessment — `{centre}`",
         "",
         "```",
-        generate_report_text(assessment, config, generated_at=generated_at).rstrip(),
+        generate_report_text(assessment, config, generated_at=generated_at, engine=engine).rstrip(),
         "```",
         "",
         "## ETS summary",
@@ -358,6 +452,7 @@ def write_evidence(
 
         store.set_gdc(query_gdc(config.centre_id, config.gdc_url))
     assessment = store.evaluate(config.centre_id)
+    engine = run_engine(store, config, probe_http=not config.skip_http)
     messages = store.snapshot()
 
     jsonl_path = directory / "messages.jsonl"
@@ -374,8 +469,8 @@ def write_evidence(
             encoding="utf-8",
         )
 
-    report_txt = generate_report_text(assessment, config)
-    report_md = generate_report_markdown(assessment, config)
+    report_txt = generate_report_text(assessment, config, engine=engine)
+    report_md = generate_report_markdown(assessment, config, engine=engine)
     (directory / "REPORT.txt").write_text(report_txt, encoding="utf-8")
     (directory / "REPORT.md").write_text(report_md, encoding="utf-8")
 
@@ -392,6 +487,8 @@ def write_evidence(
         "topics": config.topics(),
         "complete": assessment.complete,
         "official_complete": assessment.official_complete,
+        "overall": engine.overall(),
+        "test_counts": engine.counts(),
         "dataset_types": assessment.published_dataset_types(),
         "counts": {
             "origin_metadata": len(assessment.origin_metadata),
@@ -406,6 +503,10 @@ def write_evidence(
     }
     (directory / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+    )
+    (directory / "tests.json").write_text(
+        json.dumps(engine.to_dict(), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
     )
     return directory
 
