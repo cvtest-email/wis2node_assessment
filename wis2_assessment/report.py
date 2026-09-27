@@ -36,6 +36,31 @@ def _mark(ok: bool) -> str:
     return "observed" if ok else "not yet observed"
 
 
+def _global_cache_lines(assessment: Assessment) -> list[str]:
+    centre = assessment.centre_id or "<centre-id>"
+    lines = [
+        "Appendix. Operational Global Discovery Caches",
+        "This appendix is not part of the WIS2Dev assessment.",
+        "The assessment above uses gb.wis2dev.io and gdc.wis2dev.io only.",
+        "Canada, China and Germany below are operational Global Discovery Caches.",
+        "China's API is https://gdc.wis.cma.cn/api/collections/wis2-discovery-metadata/items.",
+    ]
+    if not assessment.global_caches:
+        lines.append("Canada, China and Germany have not been queried yet.")
+        return lines
+    for check in assessment.global_caches:
+        snapshot = check.snapshot
+        if snapshot.ok and snapshot.records:
+            lines.append(f"{check.name}: {len(snapshot.records)} WCMP2 record(s) for {centre}")
+            for record in snapshot.records:
+                title = f" — {record.title}" if record.title else ""
+                lines.append(f"  {record.identifier}{title}")
+        else:
+            lines.append(f"{check.name}: {snapshot.error or 'no WCMP2 records'}")
+        lines.append(f"  {snapshot.url}")
+    return lines
+
+
 def _verdict_mark(status: str) -> str:
     if status == "PASS":
         return "✓"
@@ -167,8 +192,8 @@ def generate_report_text(
     lines.append(f"{monitor_topic}.")
     lines.append("")
 
-    lines.append("1. WCMP2 in the Global Discovery Catalogue")
-    lines.append("Official check:")
+    lines.append("1. WCMP2 in the WIS2Dev Global Discovery Catalogue")
+    lines.append("Official check (gdc.wis2dev.io, not the operational caches):")
     lines.append(gdc_url)
     if assessment.gdc_ok and assessment.gdc:
         count = len(assessment.gdc.records)
@@ -378,6 +403,8 @@ def generate_report_text(
                 "the Global Broker to validate that published data has corresponding metadata."
             )
     lines.append("")
+    lines.extend(_global_cache_lines(assessment))
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -416,7 +443,7 @@ def generate_report_markdown(
     lines.append("## MQTT checklist")
     lines.append("")
     rows = [
-        [f'GDC q="{centre}"', _mark(assessment.gdc_ok), str(len(assessment.gdc.records) if assessment.gdc else 0)],
+        [f'WIS2Dev GDC q="{centre}"', _mark(assessment.gdc_ok), str(len(assessment.gdc.records) if assessment.gdc else 0)],
         [f"origin/a/wis2/{centre}/metadata", _mark(assessment.origin_metadata_ok), str(len(assessment.origin_metadata))],
         [f"origin/a/wis2/{centre}/data/#", _mark(assessment.origin_data_ok), str(len(assessment.origin_data))],
         [f"cache/a/wis2/{centre}/metadata", _mark(assessment.cache_metadata_ok), str(len(assessment.cache_metadata))],
@@ -425,6 +452,23 @@ def generate_report_markdown(
         [f"monitor/a/wis2/{centre} errors", "none" if not assessment.monitor_errors else "follow-up required", str(len(assessment.monitor_errors))],
     ]
     lines.append(_md_table(["Check", "Status", "Messages"], rows))
+    lines.append("")
+    lines.append("## Operational Global Discovery Caches")
+    lines.append("")
+    lines.append("Not part of the WIS2Dev assessment on `gb.wis2dev.io` / `gdc.wis2dev.io`.")
+    lines.append("")
+    if assessment.global_caches:
+        ops_rows = [
+            [
+                check.name,
+                _mark(bool(check.snapshot.ok and check.snapshot.records)),
+                str(len(check.snapshot.records)),
+            ]
+            for check in assessment.global_caches
+        ]
+        lines.append(_md_table(["Cache", "Status", "Records"], ops_rows))
+    else:
+        lines.append("_Canada, China and Germany have not been queried yet._")
     lines.append("")
     return "\n".join(lines)
 
@@ -447,10 +491,12 @@ def write_evidence(
 ) -> Path:
     directory = directory or evidence_dir(config)
     directory.mkdir(parents=True, exist_ok=True)
-    if store.gdc is None and not config.skip_gdc:
-        from .gdc import query_gdc
+    from .gdc import query_gdc, query_global_caches
 
+    if store.gdc is None and not config.skip_gdc:
         store.set_gdc(query_gdc(config.centre_id, config.gdc_url))
+    if not store.global_caches:
+        store.set_global_caches(query_global_caches(config.centre_id))
     assessment = store.evaluate(config.centre_id)
     engine = run_engine(store, config, probe_http=not config.skip_http)
     messages = store.snapshot()
@@ -479,6 +525,16 @@ def write_evidence(
             json.dumps(assessment.gdc.to_dict(), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+    if assessment.global_caches:
+        (directory / "gdc-caches.json").write_text(
+            json.dumps(
+                [check.to_dict() for check in assessment.global_caches],
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     summary = {
         "centre_id": config.centre_id,
@@ -498,6 +554,9 @@ def write_evidence(
             "ets_reports": len(assessment.ets_reports),
             "monitor_errors": len(assessment.monitor_errors),
             "gdc_records": len(assessment.gdc.records) if assessment.gdc else 0,
+            "global_caches": {
+                check.name: len(check.snapshot.records) for check in assessment.global_caches
+            },
             "total_messages": len(messages),
         },
     }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlparse
 
 from rich.console import Group, RenderableType
 from rich.json import JSON
@@ -11,6 +12,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .engine.results import EngineReport
+from .gdc import GLOBAL_DISCOVERY_CACHES, GdcSnapshot
 from .messages import ParsedMessage, format_geometry, local_timestamp
 
 
@@ -190,6 +192,52 @@ def format_status_line(channel: str, topic: str, count: int, status: str) -> str
     return f"{mark} {channel.upper()}  {topic}  {count} msg"
 
 
+def _cache_detail(snapshot: GdcSnapshot | None) -> tuple[bool, str]:
+    if snapshot is None:
+        return False, "not checked"
+    if snapshot.ok and snapshot.records:
+        names = [record.identifier.rsplit(":", 1)[-1] for record in snapshot.records[:4]]
+        extra = "" if len(snapshot.records) <= 4 else f" +{len(snapshot.records) - 4}"
+        return True, f"{len(snapshot.records)} record(s): {', '.join(names)}{extra}"
+    if snapshot.error and "no WCMP2" not in snapshot.error:
+        return False, f"error: {snapshot.error}"
+    return False, snapshot.error or "no records"
+
+
+def format_operational_gdc(centre_id: str, checks) -> Text:
+    """Canada, China and Germany. These are not the WIS2Dev catalogue."""
+    text = Text()
+    text.append("Not the WIS2Dev server\n", style="bold #ffb86c")
+    text.append("Operational Global Discovery Caches.\n", style="#ffb86c")
+    text.append("Separate from gb.wis2dev.io and gdc.wis2dev.io.\n", style="dim")
+    if centre_id:
+        text.append(f"centre-id  {centre_id}\n", style="cyan")
+    by_name = {item.name: item.snapshot for item in checks or []}
+    if not by_name:
+        text.append("\nNot queried yet. Press c.\n", style="yellow")
+        return text
+    for name, url in GLOBAL_DISCOVERY_CACHES:
+        snapshot = by_name.get(name)
+        host = urlparse(url).netloc
+        text.append(f"\n{name.upper()}", style="bold #ffb86c")
+        text.append(f"  {host}\n", style="dim")
+        if snapshot is None:
+            text.append("  not checked\n", style="yellow")
+            continue
+        ok, detail = _cache_detail(snapshot)
+        if ok and snapshot.records:
+            text.append(f"  {len(snapshot.records)} record(s)\n", style="bold green")
+            for record in snapshot.records:
+                text.append(f"  {record.identifier}\n")
+                if record.title:
+                    text.append(f"  {record.title}\n", style="dim")
+        elif str(detail).startswith("error:"):
+            text.append(f"  {detail}\n", style="bold red")
+        else:
+            text.append(f"  {detail}\n", style="yellow")
+    return text
+
+
 def checklist_rows(assessment) -> list[tuple[str, bool, str]]:
     centre = assessment.centre_id or "<centre-id>"
     gdc_detail = "not checked"
@@ -210,7 +258,7 @@ def checklist_rows(assessment) -> list[tuple[str, bool, str]]:
     )
     return [
         (
-            f'GDC q="{centre}"',
+            f'WIS2Dev GDC q="{centre}"',
             assessment.gdc_ok,
             gdc_detail,
         ),
@@ -249,10 +297,11 @@ def checklist_rows(assessment) -> list[tuple[str, bool, str]]:
 
 def format_checklist(assessment, engine: EngineReport | None = None) -> Text:
     text = Text()
-    text.append("WIS2 Node Assessment", style="bold")
+    text.append("WIS2Dev assessment", style="bold")
     if assessment.centre_id:
         text.append(f"  {assessment.centre_id}", style="cyan")
     text.append("\n")
+    text.append("  gb.wis2dev.io  ·  gdc.wis2dev.io\n", style="dim")
     if engine is not None:
         overall = engine.overall()
         style = "bold green" if overall == "PASS" else "bold yellow"
@@ -273,6 +322,8 @@ def format_checklist(assessment, engine: EngineReport | None = None) -> Text:
     for topic, ok, detail in checklist_rows(assessment):
         text.append("  ")
         if topic == "monitor errors" and assessment.monitor_errors:
+            mark, style = "[ERR]  ", "bold red"
+        elif not ok and str(detail).startswith("error:"):
             mark, style = "[ERR]  ", "bold red"
         elif ok:
             mark, style = "[PASS] ", "bold green"

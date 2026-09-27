@@ -6,7 +6,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from .gdc import GdcSnapshot
+from .gdc import GdcSnapshot, GlobalCacheCheck
 from .messages import ParsedMessage
 
 
@@ -42,6 +42,7 @@ class Assessment:
     monitor_other: list[ParsedMessage] = field(default_factory=list)
     monitor_errors: list[ParsedMessage] = field(default_factory=list)
     gdc: GdcSnapshot | None = None
+    global_caches: list[GlobalCacheCheck] = field(default_factory=list)
 
     @property
     def origin_metadata_ok(self) -> bool:
@@ -151,6 +152,7 @@ class MessageStore:
         self.connection_status: dict[str, str] = {}
         self.subscription_status: dict[str, str] = {}
         self.gdc: GdcSnapshot | None = None
+        self.global_caches: list[GlobalCacheCheck] = []
 
     def add(self, message: ParsedMessage) -> ParsedMessage:
         with self._lock:
@@ -165,6 +167,10 @@ class MessageStore:
         with self._lock:
             self.gdc = snapshot
 
+    def set_global_caches(self, checks: list[GlobalCacheCheck]) -> None:
+        with self._lock:
+            self.global_caches = list(checks)
+
     def set_connection(self, status: str) -> None:
         with self._lock:
             self.connection_status["broker"] = status
@@ -177,7 +183,8 @@ class MessageStore:
         messages = self.snapshot()
         with self._lock:
             gdc = self.gdc
-        assessment = Assessment(centre_id=centre_id, gdc=gdc)
+            global_caches = list(self.global_caches)
+        assessment = Assessment(centre_id=centre_id, gdc=gdc, global_caches=global_caches)
         ets_by_metadata: dict[str, ETSRecord] = {}
         for msg in messages:
             if msg.channel == "origin" and msg.is_metadata_topic():

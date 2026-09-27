@@ -57,12 +57,18 @@ Three panes show origin, cache and monitor together. The assessment engine score
 - **WTH** — topic structure, metadata/data/cache/monitor topics, centre-id consistency
 - **WNM** — JSON, required fields, UUID, pubtime, geometry, links, content, integrity, cache flag, topic/message relationship
 - **MQTT** — broker reachability, TLS, authentication, subscriptions (the broker this session connected to)
-- **GDC** — WCMP2 records present; GDC ETS on monitor (this tool does not replace wis2-gdc)
+- **GDC** — WCMP2 records on the WIS2Dev catalogue `gdc.wis2dev.io`; GDC ETS on monitor (this tool does not replace wis2-gdc)
 - **HTTP** — DNS, TLS, status, headers, download, redirects, canonical URL, hash, latency on sampled origin canonical links (when a report is written)
 
 Overall verdict: `PASS`, `PASS WITH WARNINGS`, `FAIL`, or `INCOMPLETE`.
 
-Keys: `1` `2` `3` focus panes, `g` refresh GDC, `r` write report, `s` save evidence, `q` quit.
+Keys: `1` `2` `3` focus panes, `g` refresh the WIS2Dev GDC, `c` check the operational Canada, China and Germany caches (not WIS2Dev), `r` write report, `s` save evidence, `q` quit.
+
+The live assessment uses `gb.wis2dev.io` and `gdc.wis2dev.io` only. Canada (`wis2-gdc.weather.gc.ca`), China (`gdc.wis.cma.cn/api`) and Germany (`wis2.dwd.de/gdc`) are shown in a separate pane and do not count toward the WIS2Dev verdict. One-shot check:
+
+```bash
+python3 wis2_assess.py --centre <centre-id> --gdc-caches
+```
 
 Reports are written to `wis2_assessment_output/<centre-id>_<timestamp>/`. That directory includes `REPORT.txt`, `tests.json`, and captured MQTT/GDC evidence.
 

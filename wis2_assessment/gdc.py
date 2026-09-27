@@ -1,8 +1,9 @@
-"""Query the WIS2Dev Global Discovery Catalogue (OGC API — Records)."""
+"""Query WIS2 Global Discovery Catalogues (OGC API — Records)."""
 
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -12,6 +13,14 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_GDC_URL = "https://gdc.wis2dev.io/collections/wis2-discovery-metadata/items"
+
+# Operational Global Discovery Caches. China's API is under /api; the site root
+# returns the HTML catalogue application.
+GLOBAL_DISCOVERY_CACHES: tuple[tuple[str, str], ...] = (
+    ("Canada", "https://wis2-gdc.weather.gc.ca/collections/wis2-discovery-metadata/items"),
+    ("China", "https://gdc.wis.cma.cn/api/collections/wis2-discovery-metadata/items"),
+    ("Germany", "https://wis2.dwd.de/gdc/collections/wis2-discovery-metadata/items"),
+)
 
 
 @dataclass
@@ -61,6 +70,17 @@ class GdcSnapshot:
         payload = asdict(self)
         payload.pop("raw", None)
         payload["records"] = [asdict(item) for item in self.records]
+        return payload
+
+
+@dataclass
+class GlobalCacheCheck:
+    name: str
+    snapshot: GdcSnapshot
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self.snapshot.to_dict()
+        payload["name"] = self.name
         return payload
 
 
@@ -141,7 +161,12 @@ def query_gdc(centre_id: str, base_url: str = DEFAULT_GDC_URL, timeout: int = 20
                 },
             )
             with urlopen(request, timeout=timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                payload = response.read()
+                content_type = (response.headers.get("Content-Type") or "").lower()
+            if "html" in content_type or payload.lstrip()[:1] == b"<":
+                last_error = f"GDC returned HTML instead of JSON for {url}"
+                continue
+            body = json.loads(payload.decode("utf-8"))
         except HTTPError as exc:
             last_error = f"HTTP {exc.code} for {url}"
             continue
@@ -168,3 +193,17 @@ def query_gdc(centre_id: str, base_url: str = DEFAULT_GDC_URL, timeout: int = 20
     snapshot.error = last_error or snapshot.error or "GDC query failed"
     snapshot.ok = False
     return snapshot
+
+
+def query_global_caches(centre_id: str, timeout: int = 25) -> list[GlobalCacheCheck]:
+    """Search the operational Canada, China and Germany GDCs.
+
+    These hosts are not the WIS2Dev catalogue at gdc.wis2dev.io.
+    """
+
+    def _one(name: str, base_url: str) -> GlobalCacheCheck:
+        return GlobalCacheCheck(name=name, snapshot=query_gdc(centre_id, base_url, timeout=timeout))
+
+    with ThreadPoolExecutor(max_workers=len(GLOBAL_DISCOVERY_CACHES)) as pool:
+        futures = [pool.submit(_one, name, url) for name, url in GLOBAL_DISCOVERY_CACHES]
+        return [future.result() for future in futures]

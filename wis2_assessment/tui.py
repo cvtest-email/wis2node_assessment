@@ -17,6 +17,7 @@ from .formatters import (
     format_connection_banner,
     format_detail,
     format_list_item,
+    format_operational_gdc,
 )
 from .messages import ParsedMessage
 from .mqtt_client import WIS2MqttClient
@@ -93,7 +94,7 @@ class WIS2AssessmentApp(App):
         background: #2c3340;
     }
     #lower {
-        height: 18;
+        height: 22;
     }
     #detail-pane {
         width: 3fr;
@@ -109,7 +110,14 @@ class WIS2AssessmentApp(App):
         border-title-color: #50fa7b;
         background: #14161c;
     }
-    #detail, #checklist {
+    #ops-pane {
+        width: 2fr;
+        height: 1fr;
+        border: tall #ffb86c;
+        border-title-color: #ffb86c;
+        background: #1c1812;
+    }
+    #detail, #checklist, #ops {
         padding: 0 1;
         height: auto;
         min-height: 100%;
@@ -120,7 +128,8 @@ class WIS2AssessmentApp(App):
         Binding("r", "write_report", "Report"),
         Binding("s", "save_evidence", "Save"),
         Binding("v", "toggle_verbose", "Verbose"),
-        Binding("g", "refresh_gdc", "GDC"),
+        Binding("g", "refresh_gdc", "WIS2Dev GDC"),
+        Binding("c", "refresh_ops", "Ops GDC"),
         Binding("1", "focus_channel('origin')", "Origin", show=False),
         Binding("2", "focus_channel('cache')", "Cache", show=False),
         Binding("3", "focus_channel('monitor')", "Monitor", show=False),
@@ -139,6 +148,8 @@ class WIS2AssessmentApp(App):
         self._selected: ParsedMessage | None = None
         self._output_dir = None
         self._closing = False
+        self._gdc_busy = False
+        self._ops_busy = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -156,8 +167,11 @@ class WIS2AssessmentApp(App):
                 detail_pane.border_title = "MESSAGE DETAIL"
                 yield Static(id="detail")
             with VerticalScroll(id="checklist-pane") as checklist_pane:
-                checklist_pane.border_title = "ASSESSMENT ENGINE"
+                checklist_pane.border_title = "WIS2DEV ASSESSMENT  ·  gdc.wis2dev.io"
                 yield Static(id="checklist")
+            with VerticalScroll(id="ops-pane") as ops_pane:
+                ops_pane.border_title = "OPERATIONAL GDC  ·  NOT WIS2DEV"
+                yield Static(id="ops")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -165,8 +179,10 @@ class WIS2AssessmentApp(App):
             format_connection_banner(self.config.broker_url(), "connecting")
         )
         self._refresh_checklist()
+        self._refresh_ops()
         if not self.auto_connect:
             return
+        self.action_refresh_ops()
         if not self.config.skip_gdc:
             self.action_refresh_gdc()
             self.set_interval(60, self.action_refresh_gdc)
@@ -289,16 +305,61 @@ class WIS2AssessmentApp(App):
     def action_focus_channel(self, channel: str) -> None:
         self.query_one(f"#{channel}-list", ListView).focus()
 
+    def _refresh_ops(self) -> None:
+        try:
+            checks = self.store.global_caches
+            self.query_one("#ops", Static).update(
+                format_operational_gdc(self.config.centre_id, checks)
+            )
+        except Exception:
+            return
+
     def action_refresh_gdc(self) -> None:
+        if self._gdc_busy:
+            return
+        self._gdc_busy = True
         threading.Thread(target=self._gdc_thread, daemon=True).start()
+
+    def action_refresh_ops(self) -> None:
+        if self._ops_busy:
+            return
+        self._ops_busy = True
+        threading.Thread(target=self._ops_thread, daemon=True).start()
 
     def _gdc_thread(self) -> None:
         from .gdc import query_gdc
 
-        snapshot = query_gdc(self.config.centre_id, self.config.gdc_url)
+        try:
+            snapshot = query_gdc(self.config.centre_id, self.config.gdc_url)
+        except Exception as exc:
+            self._call_ui(self._gdc_failed, str(exc))
+            return
         self._call_ui(self.apply_gdc, snapshot)
 
+    def _ops_thread(self) -> None:
+        from .gdc import query_global_caches
+
+        try:
+            checks = query_global_caches(self.config.centre_id)
+        except Exception as exc:
+            self._call_ui(self._ops_failed, str(exc))
+            return
+        self._call_ui(self.apply_ops, checks)
+
+    def _gdc_failed(self, detail: str) -> None:
+        self._gdc_busy = False
+        if self._closing:
+            return
+        self.notify(f"WIS2Dev GDC query failed: {detail}", severity="error")
+
+    def _ops_failed(self, detail: str) -> None:
+        self._ops_busy = False
+        if self._closing:
+            return
+        self.notify(f"Operational GDC query failed: {detail}", severity="error")
+
     def apply_gdc(self, snapshot) -> None:
+        self._gdc_busy = False
         if self._closing:
             return
         self.store.set_gdc(snapshot)
@@ -307,9 +368,29 @@ class WIS2AssessmentApp(App):
         except Exception:
             return
         if snapshot.ok:
-            self.notify(f"GDC: {len(snapshot.records)} WCMP2 record(s)", timeout=4)
+            self.notify(f"WIS2Dev GDC: {len(snapshot.records)} WCMP2 record(s)", timeout=4)
         else:
-            self.notify(snapshot.error or "GDC: no WCMP2 records yet", severity="warning")
+            self.notify(snapshot.error or "WIS2Dev GDC: no WCMP2 records yet", severity="warning")
+
+    def apply_ops(self, checks) -> None:
+        self._ops_busy = False
+        if self._closing:
+            return
+        self.store.set_global_caches(checks)
+        try:
+            self._refresh_ops()
+        except Exception:
+            return
+        parts = []
+        any_error = False
+        for check in checks:
+            if check.snapshot.ok:
+                parts.append(f"{check.name} {len(check.snapshot.records)}")
+            else:
+                any_error = True
+                parts.append(f"{check.name} 0")
+        severity = "warning" if any_error else "information"
+        self.notify("Operational GDC (not WIS2Dev): " + " · ".join(parts), timeout=6, severity=severity)
 
     def action_toggle_verbose(self) -> None:
         self.verbose = not self.verbose

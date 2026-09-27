@@ -74,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gdc-url", default=None, help="GDC items URL")
     parser.add_argument("--skip-gdc", action="store_true", help="Do not query the Global Discovery Catalogue")
     parser.add_argument(
+        "--gdc-caches",
+        action="store_true",
+        help="Query the operational Canada, China and Germany GDCs (not WIS2Dev) and exit",
+    )
+    parser.add_argument(
         "--skip-http",
         action="store_true",
         help="Do not probe canonical data-server URLs when writing the report",
@@ -183,6 +188,7 @@ def run_wizard(config: SessionConfig, console: Console) -> SessionConfig:
             Text.from_markup(
                 "[bold]WIS2 Node Assessment[/] for GISC approval\n"
                 "Works with any WIS2 Node / wis2box. Enter the node's [cyan]centre-id[/].\n"
+                "Development server only:\n"
                 "Broker [cyan]mqtts://gb.wis2dev.io:8883[/]  "
                 "user/password [cyan]everyone/everyone[/]  "
                 "GDC [cyan]https://gdc.wis2dev.io[/]\n"
@@ -297,11 +303,55 @@ def _summary_table(config: SessionConfig) -> Table:
     table.add_row("origin", config.origin_topic)
     table.add_row("cache", config.cache_topic)
     table.add_row("monitor", config.monitor_topic)
-    table.add_row("GDC", config.gdc_url)
+    table.add_row("WIS2Dev GDC", config.gdc_url)
+    table.add_row("Operational GDC", "Canada, China, Germany — not WIS2Dev")
     table.add_row("verbose", "yes" if config.verbose else "no")
     table.add_row("TLS verify", "off" if config.tls_insecure else "on" if config.use_tls else "n/a")
     table.add_row("GISC", config.gisc)
     return table
+
+
+def run_gdc_caches(config: SessionConfig, console: Console) -> int:
+    from .gdc import query_global_caches
+
+    centre = config.centre_id
+    console.print(
+        Panel.fit(
+            Text.from_markup(
+                "[bold]Operational Global Discovery Caches[/]\n"
+                "Not the WIS2Dev server. This does not query [cyan]gb.wis2dev.io[/] or [cyan]gdc.wis2dev.io[/].\n"
+                "Canada [cyan]wis2-gdc.weather.gc.ca[/]  "
+                "China [cyan]gdc.wis.cma.cn/api[/]  "
+                "Germany [cyan]wis2.dwd.de/gdc[/]"
+            ),
+            border_style="yellow",
+        )
+    )
+    console.print(f"Searching operational GDCs for [cyan]{centre}[/]…")
+    checks = query_global_caches(centre)
+    table = Table(title=f"Operational GDC — {centre}  (not WIS2Dev)")
+    table.add_column("Cache", style="bold")
+    table.add_column("Status")
+    table.add_column("Records", justify="right")
+    table.add_column("Metadata")
+    all_present = True
+    for check in checks:
+        snapshot = check.snapshot
+        if snapshot.ok and snapshot.records:
+            status = Text("present", style="bold green")
+            metadata = "\n".join(
+                f"{record.identifier} — {record.title}".rstrip(" —")
+                for record in snapshot.records
+            )
+            count = str(len(snapshot.records))
+        else:
+            all_present = False
+            status = Text(snapshot.error or "no records", style="bold red")
+            metadata = snapshot.url
+            count = "0"
+        table.add_row(check.name, status, count, metadata)
+    console.print(table)
+    return 0 if all_present else 1
 
 
 def run_headless(config: SessionConfig, duration: int, console: Console) -> int:
@@ -373,6 +423,15 @@ def main(argv: list[str] | None = None) -> int:
     if saved:
         _fill_from_saved(config, saved)
     _apply_cli(config, args)
+
+    if args.gdc_caches:
+        if not config.centre_id:
+            if sys.stdin.isatty():
+                config.centre_id = _ask_centre_id(console)
+            else:
+                console.print("[red]centre-id is required. Example: --centre pg-pngnws --gdc-caches[/]")
+                return 2
+        return run_gdc_caches(config, console)
 
     if args.from_jsonl:
         path = Path(args.from_jsonl)
