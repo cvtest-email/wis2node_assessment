@@ -15,7 +15,7 @@ These match the usual `mosquitto_sub` commands used on systems that do not have 
 ## Requirements
 
 - Python 3.9+
-- Network access to `gb.wis2dev.io:8883` and `gdc.wis2dev.io`
+- Network access to `gb.wis2dev.io:8883` (WIS2Dev) and, when you switch, production brokers such as `globalbroker.meteo.fr:8883`
 
 ## Install
 
@@ -40,7 +40,26 @@ The wizard asks for:
 3. Broker flags, same as `mosquitto_sub`: `-h`, `-p`, `-u`, `-P`, `-v`, TLS
 4. Name of the **GISC** writing the report
 
-WIS2Dev defaults are `mqtts://gb.wis2dev.io:8883` with username/password `everyone` / `everyone`.
+WIS2Dev defaults are `mqtts://gb.wis2dev.io:8883` with username/password `everyone` / `everyone`. Switch to production WIS with the **Production WIS** button (or `p`). That **keeps origin, cache and monitor** and splits each pane:
+
+- **Top:** `globalbroker.meteo.fr`
+- **Bottom:** `globalbroker.inmet.gov.br`
+
+Both production brokers are subscribed at the same time (same `everyone` / `everyone` MQTTS topics as `mosquitto_sub`). **WIS2Dev** (or `d`) switches back. There is no automatic hop and no France-then-Brazil sequence.
+
+```bash
+mosquitto_sub -h globalbroker.meteo.fr -p 8883 -u everyone -P everyone -t 'origin/a/wis2/<centre-id>/#' -v
+mosquitto_sub -h globalbroker.inmet.gov.br -p 8883 -u everyone -P everyone -t 'origin/a/wis2/<centre-id>/#' -v
+mosquitto_sub -h globalbroker.meteo.fr -p 8883 -u everyone -P everyone -t 'cache/a/wis2/<centre-id>/#' -v
+```
+
+The tool does **not** point the three panes at the node's own broker (for example `wis2.pngmet.gov.pg`). That host has origin notifications only, not Global Cache or monitor. To watch the node directly:
+
+```bash
+python3 wis2_assess.py --centre <centre-id> --host wis2.pngmet.gov.pg
+```
+
+Start on both production brokers immediately with `--production`. In the live console, use the **WIS2Dev** / **Production WIS** buttons (or `d` / `p`) to switch.
 
 Non-interactive example:
 
@@ -62,7 +81,9 @@ Three panes show origin, cache and monitor together. The assessment engine score
 
 Overall verdict: `PASS`, `PASS WITH WARNINGS`, `FAIL`, or `INCOMPLETE`.
 
-Keys: `1` `2` `3` focus panes, `g` refresh the WIS2Dev GDC, `c` check the operational Canada, China and Germany caches (not WIS2Dev), `r` write report, `s` save evidence, `q` quit.
+Keys: `1` `2` `3` focus panes, `g` refresh the WIS2Dev GDC, `c` check the operational Canada, China and Germany caches (not WIS2Dev), **WIS2Dev** / **Production WIS** buttons (or `d` / `p`) switch brokers, `r` write report, `s` save evidence, `q` quit.
+
+Message detail shows a human-readable notification (station, times, location, download URL). Inline BUFR/base64 is summarised, not dumped.
 
 The live assessment uses `gb.wis2dev.io` and `gdc.wis2dev.io` only. Canada (`wis2-gdc.weather.gc.ca`), China (`gdc.wis.cma.cn/api`) and Germany (`wis2.dwd.de/gdc`) are shown in a separate pane and do not count toward the WIS2Dev verdict. One-shot check:
 

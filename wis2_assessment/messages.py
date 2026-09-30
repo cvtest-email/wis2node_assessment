@@ -22,6 +22,8 @@ class ParsedMessage:
     qos: int = 0
     body: dict[str, Any] = field(default_factory=dict)
     parse_error: str = ""
+    broker_host: str = ""
+    broker_label: str = ""
 
     @property
     def message_kind(self) -> str:
@@ -193,6 +195,41 @@ class ParsedMessage:
         event = self.event_type().lower()
         return any(token in event for token in ("error", "invalid", "reject", "fail"))
 
+    def inline_content(self) -> dict[str, Any]:
+        content = self.properties().get("content")
+        return content if isinstance(content, dict) else {}
+
+    def inline_content_summary(self) -> str:
+        content = self.inline_content()
+        if not content:
+            return ""
+        size = content.get("size")
+        encoding = str(content.get("encoding") or "bytes")
+        media = ""
+        link = self.link("canonical") or self.link("update")
+        if link:
+            media = str(link.get("type") or "")
+        kind = "data"
+        if "bufr" in media.lower():
+            kind = "BUFR"
+        elif "grib" in media.lower():
+            kind = "GRIB"
+        elif "xml" in media.lower() or "cap" in media.lower():
+            kind = "XML"
+        elif "json" in media.lower():
+            kind = "JSON"
+        size_text = f"{size} bytes" if size not in (None, "") else f"{encoding} payload"
+        return f"Inline {kind}, {size_text} ({encoding}; not shown here)"
+
+    def integrity_summary(self) -> str:
+        integrity = self.properties().get("integrity")
+        if not isinstance(integrity, dict):
+            return ""
+        method = str(integrity.get("method") or "").upper().replace("SHA", "SHA-")
+        if integrity.get("value"):
+            return f"{method} checksum present"
+        return method
+
     def to_record(self) -> dict[str, Any]:
         return {
             "channel": self.channel,
@@ -203,6 +240,8 @@ class ParsedMessage:
             "kind": self.message_kind,
             "payload": self.body if self.body else self.payload_text,
             "parse_error": self.parse_error,
+            "broker_host": self.broker_host,
+            "broker_label": self.broker_label,
         }
 
 

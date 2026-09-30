@@ -28,6 +28,11 @@ VALID_WNM = {
             "value": "dGhpc2lzbm90YXJlYWxkaWdlc3RpdGlzZGVtbw==",
         },
         "cache": True,
+        "content": {
+            "encoding": "base64",
+            "value": "QlVGUgAA",
+            "size": 247,
+        },
     },
     "links": [
         {
@@ -118,6 +123,24 @@ def main() -> int:
             errors.append(f"missing {required} in engine report")
     if report.overall() not in {"INCOMPLETE", "PASS WITH WARNINGS", "PASS", "FAIL"}:
         errors.append(f"unexpected overall {report.overall()}")
+
+    from ..brokers import failover_stages, initial_stage_index
+    from ..formatters import readable_payload
+
+    decoded = readable_payload(good)
+    inline = (decoded.get("properties") or {}).get("content") or {}
+    if inline.get("value") == "QlVGUgAA":
+        errors.append("readable_payload still contains raw base64")
+    if "247" not in good.inline_content_summary():
+        errors.append(f"inline summary missing size: {good.inline_content_summary()!r}")
+    stages = failover_stages(SessionConfig())
+    if stages != ["wis2dev", "production"]:
+        errors.append(f"unexpected failover stages: {stages}")
+    if initial_stage_index(SessionConfig()) != 0:
+        errors.append("default session should start on WIS2Dev")
+    production_cfg = SessionConfig(broker_profile="production")
+    if initial_stage_index(production_cfg) != 1:
+        errors.append("production profile should start on production WIS")
 
     if errors:
         print("selfcheck FAILED")

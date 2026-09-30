@@ -592,14 +592,15 @@ def load_jsonl(path: Path) -> list[ParsedMessage]:
                 when = dt.fromisoformat(received)
             except ValueError:
                 when = None
-        messages.append(
-            parse_mqtt_message(
-                channel=row.get("channel") or "other",
-                topic=row.get("topic") or "",
-                payload=payload_text,
-                retained=bool(row.get("retained")),
-                qos=int(row.get("qos") or 0),
-                received_at=when,
-            )
+        parsed = parse_mqtt_message(
+            channel=row.get("channel") or "other",
+            topic=row.get("topic") or "",
+            payload=payload_text,
+            retained=bool(row.get("retained")),
+            qos=int(row.get("qos") or 0),
+            received_at=when,
         )
+        parsed.broker_host = str(row.get("broker_host") or "")
+        parsed.broker_label = str(row.get("broker_label") or "")
+        messages.append(parsed)
     return messages

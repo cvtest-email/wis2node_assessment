@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(use_tls=None)
     parser.add_argument("--insecure", action="store_true", help="Skip TLS certificate verification")
     parser.add_argument("--cafile", default=None, help="CA bundle for TLS")
+    parser.add_argument(
+        "--production",
+        action="store_true",
+        help="Start on both production Global Brokers at once (meteo.fr top, inmet.gov.br bottom)",
+    )
     parser.add_argument("--gisc", default=None, help="GISC name used in the generated report")
     parser.add_argument("--gdc-url", default=None, help="GDC items URL")
     parser.add_argument("--skip-gdc", action="store_true", help="Do not query the Global Discovery Catalogue")
@@ -127,6 +132,9 @@ def _fill_from_saved(config: SessionConfig, saved: dict) -> None:
     config.cafile = saved.get("cafile") or config.cafile
     config.gdc_url = saved.get("gdc_url") or config.gdc_url
     config.output_dir = saved.get("output_dir") or config.output_dir
+    config.broker_profile = str(saved.get("broker_profile") or config.broker_profile)
+    if config.broker_profile == "auto":
+        config.host = DEFAULT_HOST
 
 
 def _apply_cli(config: SessionConfig, args: argparse.Namespace) -> None:
@@ -136,8 +144,6 @@ def _apply_cli(config: SessionConfig, args: argparse.Namespace) -> None:
         apply_parsed_command(config, parse_mosquitto_command(args.cache_cmd), "cache")
     if args.monitor_cmd:
         apply_parsed_command(config, parse_mosquitto_command(args.monitor_cmd), "monitor")
-    if args.host:
-        config.host = args.host
     if args.port:
         config.port = args.port
     if args.username:
@@ -170,6 +176,15 @@ def _apply_cli(config: SessionConfig, args: argparse.Namespace) -> None:
         config.skip_http = True
     if args.output_dir:
         config.output_dir = args.output_dir
+    if args.production:
+        from .brokers import PRODUCTION_GLOBAL_BROKERS, apply_broker
+
+        config.broker_profile = "production"
+        apply_broker(config, PRODUCTION_GLOBAL_BROKERS[0][1])
+    if args.host:
+        config.host = args.host
+        if args.host != DEFAULT_HOST and not args.production:
+            config.broker_profile = "custom"
     config.apply_centre_defaults()
 
 
@@ -188,10 +203,12 @@ def run_wizard(config: SessionConfig, console: Console) -> SessionConfig:
             Text.from_markup(
                 "[bold]WIS2 Node Assessment[/] for GISC approval\n"
                 "Works with any WIS2 Node / wis2box. Enter the node's [cyan]centre-id[/].\n"
-                "Development server only:\n"
-                "Broker [cyan]mqtts://gb.wis2dev.io:8883[/]  "
-                "user/password [cyan]everyone/everyone[/]  "
-                "GDC [cyan]https://gdc.wis2dev.io[/]\n"
+                "Starts on WIS2Dev [cyan]gb.wis2dev.io[/]. Use the [cyan]Production WIS[/] "
+                "button (or [cyan]p[/]) to watch both production Global Brokers together: "
+                "[cyan]globalbroker.meteo.fr[/] on top of each pane and "
+                "[cyan]globalbroker.inmet.gov.br[/] on the bottom. "
+                "[cyan]WIS2Dev[/] (or [cyan]d[/]) switches back.\n"
+                "user/password [cyan]everyone/everyone[/]  GDC [cyan]https://gdc.wis2dev.io[/]\n"
                 "[dim]Publish metadata first, then data. Allow ~30 minutes for GDC/GB metadata checks.[/]"
             ),
             border_style="cyan",
@@ -298,6 +315,7 @@ def _summary_table(config: SessionConfig) -> Table:
     table.add_column("k", style="bold cyan")
     table.add_column("v")
     table.add_row("broker", config.broker_url())
+    table.add_row("switch", "WIS2Dev / Production WIS (buttons, or p / d)")
     table.add_row("username", config.username)
     table.add_row("centre-id", config.centre_id)
     table.add_row("origin", config.origin_topic)
@@ -355,16 +373,32 @@ def run_gdc_caches(config: SessionConfig, console: Console) -> int:
 
 
 def run_headless(config: SessionConfig, duration: int, console: Console) -> int:
+    import time
+
+    from .brokers import (
+        STAGE_PRODUCTION,
+        apply_broker,
+        broker_label,
+        failover_stages,
+        initial_stage_index,
+        production_hosts,
+    )
     from .formatters import format_list_item
     from .mqtt_client import WIS2MqttClient
     from .store import MessageStore
 
     store = MessageStore()
+    stages = failover_stages(config)
+    index = initial_stage_index(config)
     console.print("[bold]Collecting MQTT notifications[/]  (Ctrl+C to write the report)")
+    console.print("[dim]Headless stays on the starting broker. Use the live console to switch WIS2Dev / Production WIS.[/]")
+
+    clients: list = []
 
     def on_message(message) -> None:
         store.add(message)
-        console.print(f"[{message.channel}] ", end="")
+        label = message.broker_label or message.broker_host or "?"
+        console.print(f"[{label} {message.channel}] ", end="")
         console.print(format_list_item(message, verbose=config.verbose))
 
     def on_status(kind: str, text: str) -> None:
@@ -379,22 +413,42 @@ def run_headless(config: SessionConfig, duration: int, console: Console) -> int:
         style = "red" if "fail" in text.lower() or "denied" in text.lower() else "dim"
         console.print(f"{kind}: {text}", style=style)
 
-    client = WIS2MqttClient(config, on_message, on_status)
-    client.start()
-    try:
-        if duration > 0:
-            import time
+    def stop_clients() -> None:
+        while clients:
+            client = clients.pop()
+            try:
+                client.stop()
+            except Exception:
+                pass
 
-            time.sleep(duration)
+    def start_stage(stage: str) -> None:
+        stop_clients()
+        if stage == STAGE_PRODUCTION:
+            targets = production_hosts()
+            apply_broker(config, targets[0][1])
+            console.print(
+                "Production Global Brokers (together): "
+                "globalbroker.meteo.fr (top) and globalbroker.inmet.gov.br (bottom)"
+            )
         else:
-            import time
+            targets = [(broker_label(config.host), config.host)]
+            console.print(f"Starting on {targets[0][0]}  {config.broker_url()}")
+        for _label, host in targets:
+            client = WIS2MqttClient(config, on_message, on_status, host=host)
+            clients.append(client)
+            client.start()
 
-            while True:
-                time.sleep(0.5)
+    start_stage(stages[index])
+    started = time.monotonic()
+    try:
+        while True:
+            time.sleep(0.5)
+            if duration > 0 and (time.monotonic() - started) >= duration:
+                break
     except KeyboardInterrupt:
         console.print("\nStopping…")
     finally:
-        client.stop()
+        stop_clients()
     directory = write_evidence(store, config)
     console.print(f"[green]Report:[/] {directory / 'REPORT.txt'}")
     console.print(f"[green]Evidence:[/] {directory}")

@@ -55,6 +55,7 @@ class SessionConfig:
     http_timeout: int = 15
     output_dir: str = ""
     client_id: str = ""
+    broker_profile: str = "auto"
 
     def topics(self) -> dict[str, str]:
         return {
@@ -230,7 +231,10 @@ def save_config(config: SessionConfig) -> None:
         "gisc": config.gisc,
         "gdc_url": config.gdc_url,
         "output_dir": config.output_dir,
+        "broker_profile": config.broker_profile,
     }
+    if config.broker_profile == "auto":
+        payload["host"] = DEFAULT_HOST
     CONFIG_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 

@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from .brokers import broker_label
 from .config import SessionConfig, default_ca_bundle
 from .messages import ParsedMessage, parse_mqtt_message
 
@@ -22,14 +23,20 @@ class WIS2MqttClient:
         config: SessionConfig,
         on_message: MessageCallback,
         on_status: StatusCallback | None = None,
+        host: str | None = None,
     ) -> None:
         self.config = config
+        self.host = host or config.host
         self.on_message = on_message
         self.on_status = on_status or (lambda _kind, _text: None)
         self._client: Any = None
         self._lock = threading.Lock()
         self._subscribe_mids: dict[int, tuple[str, str]] = {}
         self._stopped = threading.Event()
+
+    def broker_url(self) -> str:
+        scheme = "mqtts" if self.config.use_tls else "mqtt"
+        return f"{scheme}://{self.host}:{int(self.config.port)}"
 
     def _emit(self, kind: str, text: str) -> None:
         if self._stopped.is_set():
@@ -39,7 +46,7 @@ class WIS2MqttClient:
     def start(self) -> None:
         import paho.mqtt.client as mqtt
 
-        client_id = self.config.client_id or f"wis2-assess-{uuid.uuid4().hex[:10]}"
+        client_id = self.config.client_id or f"wis2-assess-{self.host.split('.')[0]}-{uuid.uuid4().hex[:8]}"
         kwargs: dict[str, Any] = {
             "client_id": client_id,
             "protocol": mqtt.MQTTv311,
@@ -80,8 +87,8 @@ class WIS2MqttClient:
 
         self._client = client
         self._stopped.clear()
-        self._emit("connection", f"connecting to {self.config.broker_url()}")
-        client.connect_async(self.config.host, int(self.config.port), keepalive=60)
+        self._emit("connection", f"connecting to {self.broker_url()}")
+        client.connect_async(self.host, int(self.config.port), keepalive=60)
         client.loop_start()
 
     def stop(self) -> None:
@@ -167,6 +174,8 @@ class WIS2MqttClient:
                 qos=int(getattr(msg, "qos", 0) or 0),
                 received_at=datetime.now(timezone.utc),
             )
+            parsed.broker_host = self.host
+            parsed.broker_label = broker_label(self.host)
             self.on_message(parsed)
         except Exception as exc:
             self._emit("error", f"failed to parse MQTT payload: {exc}")
