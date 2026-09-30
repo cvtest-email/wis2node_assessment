@@ -53,10 +53,10 @@ mosquitto_sub -h globalbroker.inmet.gov.br -p 8883 -u everyone -P everyone -t 'o
 mosquitto_sub -h globalbroker.meteo.fr -p 8883 -u everyone -P everyone -t 'cache/a/wis2/<centre-id>/#' -v
 ```
 
-The tool does **not** point the three panes at the node's own broker (for example `wis2.pngmet.gov.pg`). That host has origin notifications only, not Global Cache or monitor. To watch the node directly:
+The tool does **not** point the three panes at the node's own broker (for example `wis2.example.org`). That host has origin notifications only, not Global Cache or monitor. To watch the node directly:
 
 ```bash
-python3 wis2_assess.py --centre <centre-id> --host wis2.pngmet.gov.pg
+python3 wis2_assess.py --centre <centre-id> --host wis2.example.org
 ```
 
 Start on both production brokers immediately with `--production`. In the live console, use the **WIS2Dev** / **Production WIS** buttons (or `d` / `p`) to switch.
